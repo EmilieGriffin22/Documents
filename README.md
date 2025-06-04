@@ -1,3 +1,56 @@
+using Microsoft.OpenApi.Models;
+using System.Collections.Generic;
+
+/// <summary>
+/// Makes sure <paramref name="op"/> has a requestBody section for
+/// "application/json" with an object schema.  Returns the created
+/// (or existing) <see cref="OpenApiRequestBody"/> so you can chain calls.
+/// </summary>
+internal static OpenApiRequestBody EnsureJsonRequestBody(
+    OpenApiOperation op,
+    bool required = true)
+{
+    // 1 — Create the requestBody wrapper if it’s missing
+    if (op.RequestBody == null)
+    {
+        op.RequestBody = new OpenApiRequestBody
+        {
+            Required = required,
+            Content = new Dictionary<string, OpenApiMediaType>()
+        };
+    }
+    else
+    {
+        op.RequestBody.Required |= required;            // keep “true” once set
+    }
+
+    // 2 — Add / fetch the "application/json" media-type entry
+    if (!op.RequestBody.Content.TryGetValue("application/json", out var jsonMedia))
+    {
+        jsonMedia = new OpenApiMediaType();
+        op.RequestBody.Content["application/json"] = jsonMedia;
+    }
+
+    // 3 — Ensure an object schema with a Properties bag
+    if (jsonMedia.Schema == null)
+    {
+        jsonMedia.Schema = new OpenApiSchema
+        {
+            Type = "object",
+            Properties = new Dictionary<string, OpenApiSchema>()
+        };
+    }
+    else
+    {
+        jsonMedia.Schema.Type ??= "object";
+        jsonMedia.Schema.Properties ??= new Dictionary<string, OpenApiSchema>();
+    }
+
+    return op.RequestBody;
+}
+
+
+
 Below is the pattern that normally works when you want Swagger UI to “talk to” a Razor-Page handler that relies on a custom model-binder (your QueryParameterBinder) and a List<QueryParameter> value:
 
 ⸻
