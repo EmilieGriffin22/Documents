@@ -1,3 +1,155 @@
+Below is the pattern that normally works when you want Swagger UI to “talk to” a Razor-Page handler that relies on a custom model-binder (your QueryParameterBinder) and a List<QueryParameter> value:
+
+⸻
+
+1  Treat the complex binder parameter as body data, not a “normal” parameter
+	•	Swagger-UI can only render rich editors (arrays, objects, etc.) when the data is described in the requestBody section of the OpenAPI document.
+	•	Placing it in parameters (even with BindingSource.Custom) will make Swagger-UI fall back to primitive query/form-field editors, which cannot build a List<QueryParameter> for you.
+	•	A Razor Page handler happily binds complex types from the body if you decorate it (or the PageModel) with [Consumes("application/json")] or [FromBody].
+
+OpenAPI 3 body syntax you need (trimmed to essentials)  ￼
+
+requestBody:
+  required: true
+  content:
+    application/json:
+      schema:
+        type: object
+        properties:
+          query:
+            type: string
+          parameters:           # <-- your List<QueryParameter>
+            type: array
+            items:
+              $ref: '#/components/schemas/QueryParameter'
+          system:
+            type: string
+          dbId:
+            type: string
+components:
+  schemas:
+    QueryParameter:
+      type: object
+      properties:
+        Name:   { type: string }
+        Type:   { type: string }   # Int32, String, DateTime, …
+        Value:  { type: string }
+      required: [Name, Value]
+
+MapClrTypeToOpenApiSchema can build the primitive parts automatically; complex parts you’ll hand-code once and $ref.
+
+⸻
+
+2  Update your setParameters helper
+
+private void SetParameters(OpenApiOperation op, HandlerMethodDescriptor handler)
+{
+    var formProps = new Dictionary<string, OpenApiSchema>();
+    foreach (var p in handler.Parameters)
+    {
+        var src = p.BindingInfo?.BindingSource;
+        if (src == BindingSource.Form)          // unchanged
+        {
+            formProps[p.Name] = MapClrTypeToOpenApiType(p.ParameterType);
+        }
+        else if (src == BindingSource.Custom &&
+                 typeof(IEnumerable<QueryParameter>).IsAssignableFrom(p.ParameterType))
+        {
+            // move to requestBody instead of Parameters
+            EnsureJsonRequestBody(op);
+            op.RequestBody.Content["application/json"].Schema
+               .Properties.Add(p.Name, new OpenApiSchema {
+                   Type = "array",
+                   Items = new OpenApiSchema { Reference = new OpenApiReference {
+                       Id = "QueryParameter", Type = ReferenceType.Schema } } });
+        }
+        else
+        {
+            op.Parameters.Add(new OpenApiParameter {
+                In   = ParameterLocation.Query,
+                Name = p.Name,
+                Schema = MapClrTypeToOpenApiType(p.ParameterType)
+            });
+        }
+    }
+
+    // x-www-form-urlencoded section if you kept any [FromForm] items
+    if (formProps.Any())
+    {
+        op.RequestBody = new OpenApiRequestBody {
+            Required = true,
+            Content = {
+                ["application/x-www-form-urlencoded"] = new OpenApiMediaType {
+                    Schema = new OpenApiSchema {
+                        Type = "object",
+                        Properties = formProps
+                    }
+                }
+            }
+        };
+    }
+}
+
+EnsureJsonRequestBody is a tiny helper that adds an application/json section if it doesn’t exist yet.
+
+⸻
+
+3  What it looks like in Swagger UI
+	•	You’ll get a single “schema” editor where the user pastes/edits JSON:
+
+{
+  "query": "SELECT * FROM Employees WHERE Id=@Id",
+  "parameters": [
+    { "name": "@Id", "type": "Int32", "value": "42" }
+  ],
+  "system": "GxP",
+  "dbId": "Prod"
+}
+
+	•	Swagger-UI will send Content-Type: application/json and Razor Pages will hand the JSON string to QueryParameterBinder, which can deserialize or validate however it already does.
+
+⸻
+
+4  If you must stay with application/x-www-form-urlencoded
+
+OpenAPI 3 technically supports objects/arrays in URL-encoded bodies, but the UX is poor because users must type bracketed keys or raw JSON strings. If you really need it:
+
+requestBody:
+  content:
+    application/x-www-form-urlencoded:
+      schema:
+        type: object
+        properties:
+          parameters:
+            type: string          # JSON-string inside the field
+      encoding:
+        parameters:
+          contentType: application/json
+
+Swagger-UI will still render a single text box for parameters; the caller pastes a JSON array. This is standards-compliant but rarely worth the friction  ￼ ￼.
+
+⸻
+
+5  Side notes & gotchas
+
+Issue	Quick Fix
+Razor Pages only allow one complex [FromBody] parameter.	Wrap everything in a DTO, or receive HttpRequest.Body and parse manually inside your binder.
+Custom binder not triggered?	Be sure the binder is registered after AddControllers() / AddRazorPages() and that the action parameter keeps [ModelBinder].
+Try-it-out shows 415/400 errors	Check the Consumes attribute on the PageModel; Swagger will mirror it automatically only if you add [Consumes] at method level.
+
+
+⸻
+
+Recap
+	•	Put complex, custom-bound parameters in requestBody → Swagger-UI can serialize them.
+	•	Use application/json unless your page absolutely requires form-url-encoded.
+	•	Extend your setParameters logic to detect BindingSource.Custom and populate the body section instead of the parameters list.
+	•	Document the structure once with a named schema (QueryParameter) so you avoid hand-rolled JSON in every operation.
+
+With those tweaks Swagger UI will generate a clean editor for your Razor-Page handler, and you’ll keep your existing QueryParameterBinder untouched.
+
+
+
 Great — since you’re already generating OpenApiOperation manually (not relying purely on reflection or ApiExplorer), here’s how you can adapt the logic from FormToRequestBodyFilter directly into your custom setParameters(OpenApiOperation operation, HandlerMethodDescriptor handler) method:
 
 ⸻
