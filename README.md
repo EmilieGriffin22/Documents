@@ -1,3 +1,106 @@
+Great — since you’re already generating OpenApiOperation manually (not relying purely on reflection or ApiExplorer), here’s how you can adapt the logic from FormToRequestBodyFilter directly into your custom setParameters(OpenApiOperation operation, HandlerMethodDescriptor handler) method:
+
+⸻
+
+✅ What this method should do
+	1.	Add parameters that are NOT [FromForm] to operation.Parameters.
+	2.	Group all [FromForm] parameters into a synthetic requestBody with content type application/x-www-form-urlencoded.
+
+⸻
+
+✅ Modified setParameters implementation
+
+private void setParameters(OpenApiOperation operation, HandlerMethodDescriptor handler)
+{
+    var nonFormParams = new List<OpenApiParameter>();
+    var formParams = new Dictionary<string, OpenApiSchema>();
+
+    foreach (var param in handler.Parameters)
+    {
+        var paramName = param.Name;
+        var paramType = param.ParameterType;
+        var bindingSource = param.BindingInfo?.BindingSource;
+
+        if (bindingSource == BindingSource.Form)
+        {
+            // Treat this parameter as part of the requestBody
+            formParams[paramName] = new OpenApiSchema
+            {
+                Type = mapClrTypeToOpenApiType(paramType),
+            };
+        }
+        else
+        {
+            // Treat this parameter as a query/path/header parameter
+            nonFormParams.Add(new OpenApiParameter
+            {
+                Name = paramName,
+                In = ParameterLocation.Query, // Or use handler.RouteInfo to detect path parameters
+                Required = !param.IsOptional,
+                Schema = new OpenApiSchema
+                {
+                    Type = mapClrTypeToOpenApiType(paramType),
+                }
+            });
+        }
+    }
+
+    // Attach non-form parameters
+    operation.Parameters = nonFormParams;
+
+    // Attach form parameters via requestBody
+    if (formParams.Any())
+    {
+        operation.RequestBody = new OpenApiRequestBody
+        {
+            Required = true,
+            Content =
+            {
+                ["application/x-www-form-urlencoded"] = new OpenApiMediaType
+                {
+                    Schema = new OpenApiSchema
+                    {
+                        Type = "object",
+                        Properties = formParams
+                    }
+                }
+            }
+        };
+    }
+}
+
+
+⸻
+
+✅ Helper: mapClrTypeToOpenApiType
+
+This is a basic utility to map .NET types to OpenAPI types:
+
+private string mapClrTypeToOpenApiType(Type type)
+{
+    if (type == typeof(string)) return "string";
+    if (type == typeof(int) || type == typeof(long)) return "integer";
+    if (type == typeof(bool)) return "boolean";
+    if (type == typeof(double) || type == typeof(float) || type == typeof(decimal)) return "number";
+    if (type == typeof(DateTime)) return "string"; // Use `format = "date-time"` if needed
+    return "string"; // fallback
+}
+
+
+⸻
+
+🧠 Notes
+	•	You can further improve accuracy by checking param.ParameterType.IsAssignableTo(typeof(IFormFile)) and using multipart/form-data and "format": "binary" when needed.
+	•	If you want to set enum, format, or validation constraints (e.g. min/maxLength), you’ll need a richer schema generator (e.g. call ctx.SchemaGenerator.GenerateSchema() like Swashbuckle does).
+	•	If your Razor Pages use handler names, remember to inject the "handler" query parameter manually as well.
+
+⸻
+
+Let me know if you want to extend this with file uploads, nested types, or enum support — the core setup above gives you Swagger UI interactivity with [FromForm] just like a controller.
+
+
+
+
 Why the [FromForm] parameters disappear in Swagger UI
 
 In OpenAPI 3.x, query/header/path/cookie values are listed under the parameters section, but anything that comes from the HTTP body must be expressed with a single requestBody object.
