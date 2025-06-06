@@ -1,3 +1,26 @@
+                    // [Route] at method level
+                    var methodRouteAttr = method.AttributeLists.SelectMany(a => a.Attributes)
+                        .FirstOrDefault(attr => attr.Name.ToString().Contains("Route"));
+
+                    string methodRouteTemplate = methodRouteAttr?.ArgumentList?.Arguments.FirstOrDefault()?.ToString().Trim('"');
+
+                    if (methodRouteTemplate != null)
+                        methodRouteTemplate = methodRouteTemplate.Replace("[controller]", controllerName)
+                                                                 .Replace("[action]", methodName);
+
+                    // Resolve full route
+                    string fullRoute = classRouteTemplate;
+                    if (!string.IsNullOrEmpty(methodRouteTemplate))
+                    {
+                        if (!string.IsNullOrEmpty(fullRoute) && !fullRoute.EndsWith("/"))
+                            fullRoute += "/";
+                        fullRoute += methodRouteTemplate;
+                    }
+
+
+
+
+
 using System;
 using System.IO;
 using System.Linq;
