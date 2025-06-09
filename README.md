@@ -1,197 +1,114 @@
-private void setParameters(OpenApiOperation operation, HandlerMethodDescriptor handler)
+Here’s the quickest way to solve both issues without changing the rest of your filter logic.
+
+⸻
+
+1  Expose both application/json and application/x-www-form-urlencoded
+
+Because OpenAPI lets you list several media-types for the same request body, simply add them side-by-side in the Content map:
+
+// formProps = Dictionary<string, OpenApiSchema> you already built
+if (formProps.Any())
 {
-    var nonFormParams = new List<OpenApiParameter>();
-    var formParams = new Dictionary<string, OpenApiSchema>();
-    var objectParams = new Dictionary<string, OpenApiSchema>();
-
-    foreach (var param in handler.Parameters)
+    var schema = new OpenApiSchema
     {
-        var paramName = param.Name;
-        if (param.BindingInfo?.BinderModelName != null)
-        {
-            paramName = param.BindingInfo.BinderModelName;
-        }
+        Type       = "object",
+        Properties = formProps,
+        Required   = new HashSet<string>(formProps.Keys)
+    };
 
-        var paramType = param.ParameterType;
-        var bindingSource = param.BindingInfo?.BindingSource;
-        string openAPIType = MapClrTypeToOpenApiType(paramType);
-
-        // Generate schema
-        OpenApiSchema schema = new OpenApiSchema { Type = openAPIType };
-        if (openAPIType == "object" || openAPIType == "array")
-        {
-            schema = GenerateSchema(param.ParameterType);
-        }
-
-        if (bindingSource == BindingSource.Form || bindingSource == BindingSource.Body)
-        {
-            formParams[paramName] = schema;
-        }
-        else
-        {
-            operation.Parameters.Add(new OpenApiParameter
-            {
-                Name = paramName,
-                In = ParameterLocation.Query,
-                Required = true,
-                Schema = schema
-            });
-        }
-    }
-
-    // Build OpenApiRequestBody from formParams
-    if (formParams.Any())
+    operation.RequestBody = new OpenApiRequestBody
     {
-        var schema = new OpenApiSchema
+        Required = true,
+        Content  = new Dictionary<string, OpenApiMediaType>
         {
-            Type = "object",
-            Properties = formParams,
-            Required = new HashSet<string>(formParams.Keys) // Optional: mark all as required
-        };
-
-        var content = new Dictionary<string, OpenApiMediaType>
-        {
-            ["application/x-www-form-urlencoded"] = new OpenApiMediaType
-            {
-                Schema = schema
-            }
-        };
-
-        operation.RequestBody = new OpenApiRequestBody
-        {
-            Content = content,
-            Required = true
-        };
-    }
+            ["application/x-www-form-urlencoded"] = new OpenApiMediaType { Schema = schema },
+            ["application/json"]                  = new OpenApiMediaType { Schema = schema }
+            // add ["multipart/form-data"] if you also want file upload
+        }
+    };
 }
-                    
-                    
-                    
-                    
-                    
-                    // [Route] at method level
-                    var methodRouteAttr = method.AttributeLists.SelectMany(a => a.Attributes)
-                        .FirstOrDefault(attr => attr.Name.ToString().Contains("Route"));
 
-                    string methodRouteTemplate = methodRouteAttr?.ArgumentList?.Arguments.FirstOrDefault()?.ToString().Trim('"');
+Swagger UI will now show a little drop-down beside “Try it out” so the caller can pick either encoding. This is exactly the pattern the Swashbuckle examples (and many blog posts) use to describe a form-body alongside JSON ￼.
 
-                    if (methodRouteTemplate != null)
-                        methodRouteTemplate = methodRouteTemplate.Replace("[controller]", controllerName)
-                                                                 .Replace("[action]", methodName);
+⸻
 
-                    // Resolve full route
-                    string fullRoute = classRouteTemplate;
-                    if (!string.IsNullOrEmpty(methodRouteTemplate))
-                    {
-                        if (!string.IsNullOrEmpty(fullRoute) && !fullRoute.EndsWith("/"))
-                            fullRoute += "/";
-                        fullRoute += methodRouteTemplate;
-                    }
+2  Generate a schema for List<QueryParameter> (or any generic list)
 
+The crash happens because the helper that maps CLR → OpenAPI types doesn’t recognise generic collections. Swap in the three helpers below; they treat anything that implements IEnumerable (except string) as an array, recurse on the element type, and otherwise fall back to primitives or a POCO walk:
 
+private static bool IsEnumerable(Type t) =>
+    typeof(System.Collections.IEnumerable).IsAssignableFrom(t) && t != typeof(string);
 
-
-
-using System;
-using System.IO;
-using System.Linq;
-using System.Reflection;
-using System.Text;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Authorization;
-
-class Program
+// 1  Primitive map ---------------------------------------------------
+private string MapClrTypeToOpenApiType(Type type)
 {
-    static void Main(string[] args)
-    {
-        var projectPath = @"C:\Path\To\Your\Project";
-        var outputPath = Path.Combine(projectPath, "Documentation.txt");
+    type = Nullable.GetUnderlyingType(type) ?? type;
 
-        var sb = new StringBuilder();
-        sb.AppendLine("=== Project Documentation ===");
-        sb.AppendLine();
-
-        DocumentWwwRoot(Path.Combine(projectPath, "wwwroot"), sb);
-        DocumentControllers(projectPath, sb);
-        DocumentRazorPages(Path.Combine(projectPath, "Pages"), sb);
-
-        File.WriteAllText(outputPath, sb.ToString());
-        Console.WriteLine("Documentation generated at: " + outputPath);
-    }
-
-    static void DocumentWwwRoot(string wwwrootPath, StringBuilder sb)
-    {
-        sb.AppendLine("== wwwroot Directory Files ==");
-        foreach (var file in Directory.GetFiles(wwwrootPath, "*.*", SearchOption.AllDirectories))
-        {
-            var relativePath = Path.GetRelativePath(wwwrootPath, file);
-            sb.AppendLine($"- {relativePath.Replace("\\", "/")}");
-        }
-        sb.AppendLine();
-    }
-
-    static void DocumentControllers(string projectPath, StringBuilder sb)
-    {
-        sb.AppendLine("== Controllers ==");
-
-        var dllPath = Directory.GetFiles(projectPath, "*.dll", SearchOption.AllDirectories)
-            .FirstOrDefault(f => f.Contains("YourProjectName")); // Replace with actual DLL name
-
-        if (dllPath == null)
-        {
-            sb.AppendLine("No compiled DLL found.");
-            return;
-        }
-
-        var assembly = Assembly.LoadFrom(dllPath);
-        var controllers = assembly.GetTypes()
-            .Where(t => t.IsSubclassOf(typeof(ControllerBase)) || t.Name.EndsWith("Controller"));
-
-        foreach (var controller in controllers)
-        {
-            sb.AppendLine($"Controller: {controller.Name}");
-            foreach (var method in controller.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly))
-            {
-                var routeAttr = method.GetCustomAttributes().FirstOrDefault(a => a is HttpMethodAttribute) as HttpMethodAttribute;
-                var authorizeAttr = method.GetCustomAttribute<AuthorizeAttribute>();
-
-                sb.Append($"  Method: {method.Name}");
-
-                if (routeAttr != null)
-                    sb.Append($" [{routeAttr.HttpMethods.FirstOrDefault()}]");
-
-                if (authorizeAttr != null)
-                    sb.Append($" [Authorize{(string.IsNullOrEmpty(authorizeAttr.Policy) ? "" : $" Policy={authorizeAttr.Policy}")}]");
-
-                sb.AppendLine();
-                foreach (var param in method.GetParameters())
-                {
-                    sb.AppendLine($"    - {param.Name} : {param.ParameterType.Name}");
-                }
-            }
-            sb.AppendLine();
-        }
-    }
-
-    static void DocumentRazorPages(string pagesPath, StringBuilder sb)
-    {
-        sb.AppendLine("== Razor Pages ==");
-
-        foreach (var file in Directory.GetFiles(pagesPath, "*.cshtml.cs", SearchOption.AllDirectories))
-        {
-            var relativePath = Path.GetRelativePath(pagesPath, file);
-            sb.AppendLine($"Page: {relativePath.Replace("\\", "/")}");
-            var lines = File.ReadAllLines(file);
-
-            foreach (var line in lines)
-            {
-                if (line.Trim().StartsWith("public void On") || line.Trim().StartsWith("public async Task On"))
-                {
-                    sb.AppendLine($"  Handler: {line.Trim()}");
-                }
-            }
-
-            sb.AppendLine();
-        }
-    }
+    if (type == typeof(string))                     return "string";
+    if (type == typeof(bool))                       return "boolean";
+    if (type.IsPrimitive || type.IsEnum)            return "integer";
+    if (type == typeof(float) || type == typeof(double) || type == typeof(decimal))
+                                                    return "number";
+    if (IsEnumerable(type))                         return "array";
+    return "object";
 }
+
+// 2  Full schema generator ------------------------------------------
+private OpenApiSchema GenerateSchema(Type type)
+{
+    if (IsEnumerable(type))
+    {
+        Type elem = type.IsArray
+                  ? type.GetElementType()
+                  : (type.IsGenericType ? type.GetGenericArguments()[0] : typeof(object));
+
+        return new OpenApiSchema
+        {
+            Type  = "array",
+            Items = GenerateSchema(elem)
+        };
+    }
+
+    var simple = MapClrTypeToOpenApiType(type);
+    if (simple != "object")
+        return new OpenApiSchema { Type = simple };
+
+    var obj = new OpenApiSchema
+    {
+        Type       = "object",
+        Properties = new Dictionary<string, OpenApiSchema>()
+    };
+
+    foreach (var p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        obj.Properties[p.Name] = GenerateSchema(p.PropertyType);
+
+    return obj;
+}
+
+When the parameter is List<QueryParameter> the code above first recognises that it’s an enumerable, pulls out the element type (QueryParameter), and generates:
+
+type: array
+items:
+  type: object      # schema from QueryParameter’s public properties
+  properties:
+    Name:  { type: string }
+    Value: { type: string }
+    Type:  { type: string }
+
+QueryParameter is just a plain DevExpress POCO that exposes those fields, so Swagger can serialise a JSON array that your binder happily deserialises into a real List<QueryParameter> ￼.
+
+Note – If you prefer reusable component definitions, stash each complex schema in context.SchemaRepository and return a $ref instead of the inline object. The detection logic above still applies.
+
+⸻
+
+3  No more per-property helper
+
+Now everything funnels through GenerateSchema, so you can delete any separate GetPropertySchema helper (or reduce it to a single => GenerateSchema(t); line).
+
+⸻
+
+Result
+	•	Users get a toggle between JSON and form-url-encoded bodies.
+	•	Generic list parameters (including List<QueryParameter>) appear correctly in the UI and no longer throw at runtime.
+
+Compile, refresh Swagger UI, and the endpoint should be fully interactive.
