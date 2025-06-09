@@ -1,3 +1,74 @@
+private void setParameters(OpenApiOperation operation, HandlerMethodDescriptor handler)
+{
+    var nonFormParams = new List<OpenApiParameter>();
+    var formParams = new Dictionary<string, OpenApiSchema>();
+    var objectParams = new Dictionary<string, OpenApiSchema>();
+
+    foreach (var param in handler.Parameters)
+    {
+        var paramName = param.Name;
+        if (param.BindingInfo?.BinderModelName != null)
+        {
+            paramName = param.BindingInfo.BinderModelName;
+        }
+
+        var paramType = param.ParameterType;
+        var bindingSource = param.BindingInfo?.BindingSource;
+        string openAPIType = MapClrTypeToOpenApiType(paramType);
+
+        // Generate schema
+        OpenApiSchema schema = new OpenApiSchema { Type = openAPIType };
+        if (openAPIType == "object" || openAPIType == "array")
+        {
+            schema = GenerateSchema(param.ParameterType);
+        }
+
+        if (bindingSource == BindingSource.Form || bindingSource == BindingSource.Body)
+        {
+            formParams[paramName] = schema;
+        }
+        else
+        {
+            operation.Parameters.Add(new OpenApiParameter
+            {
+                Name = paramName,
+                In = ParameterLocation.Query,
+                Required = true,
+                Schema = schema
+            });
+        }
+    }
+
+    // Build OpenApiRequestBody from formParams
+    if (formParams.Any())
+    {
+        var schema = new OpenApiSchema
+        {
+            Type = "object",
+            Properties = formParams,
+            Required = new HashSet<string>(formParams.Keys) // Optional: mark all as required
+        };
+
+        var content = new Dictionary<string, OpenApiMediaType>
+        {
+            ["application/x-www-form-urlencoded"] = new OpenApiMediaType
+            {
+                Schema = schema
+            }
+        };
+
+        operation.RequestBody = new OpenApiRequestBody
+        {
+            Content = content,
+            Required = true
+        };
+    }
+}
+                    
+                    
+                    
+                    
+                    
                     // [Route] at method level
                     var methodRouteAttr = method.AttributeLists.SelectMany(a => a.Attributes)
                         .FirstOrDefault(attr => attr.Name.ToString().Contains("Route"));
