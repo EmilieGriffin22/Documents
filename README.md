@@ -1,128 +1,191 @@
-Below is one practical way to refactor your OpenAPI generation so that every Razor-Page request is sent to
-
-/page?handler={handlerName}&...
-
-instead of
-
-/page/{handlerName}
-
-The idea is:
-	•	Only one path item per Razor Page – e.g. /Reports or /Reports/{id}.
-	•	A single query parameter called handler enumerates the available page-handlers (OnGet, OnPostSave, etc.).
-	•	Per handler-specific parameters are still listed, but they are flagged in the description so Swagger-UI users know which handler they belong to.
+Yes, you can make SwaggerUI send cookies and custom headers like RequestVerificationToken, especially since it’s served from the same origin as your authenticated application. Here’s how to make that work:
 
 ⸻
 
-1 · Collect handlers page-by-page
+✅ 1. Enable Cookie Sending in SwaggerUI
 
-var grouped = allHandlers          // IEnumerable<HandlerMethodDescriptor>
-              .GroupBy(h => h.PageRoute);   //  "/Reports"  "/Reports/{id}" ...
+SwaggerUI uses the Fetch API, and you need to explicitly enable credentials (cookies) in those requests.
 
-2 · Create—or reuse—the path item
+In your SwaggerUI setup (typically in swagger-initializer.js or wherever you call SwaggerUIBundle()), set:
 
-if (!doc.Paths.TryGetValue(pageRoute, out var pathItem))
-    doc.Paths[pageRoute] = pathItem = new OpenApiPathItem();
+SwaggerUIBundle({
+  url: "/swagger/v1/swagger.json",
+  dom_id: "#swagger-ui",
+  presets: [
+    SwaggerUIBundle.presets.apis,
+    SwaggerUIStandalonePreset
+  ],
+  requestInterceptor: (req) => {
+    req.credentials = "include";  // <- THIS IS CRUCIAL FOR COOKIES
+    return req;
+  }
+});
 
-3 · Build one OpenAPI operation per HTTP verb
+	•	req.credentials = "include" ensures that cookies (including auth and XSRF-TOKEN cookies) are sent with SwaggerUI’s fetch requests.
 
-The outer loop is per HTTP verb (GET, POST…).
-Inside it, collect every handler that uses that verb.
+⸻
 
-foreach (var verbGroup in handlersByVerb)
+✅ 2. Set Custom Headers (e.g., RequestVerificationToken)
+
+If you’re using an anti-forgery token that must be included in the header (common with ASP.NET apps), you can pull it from a cookie or a meta tag and inject it using the same requestInterceptor:
+
+requestInterceptor: (req) => {
+  req.credentials = "include";
+
+  // Grab the token from a cookie (adjust name as needed)
+  const token = getCookie("RequestVerificationToken");
+  if (token) {
+    req.headers["RequestVerificationToken"] = token;
+  }
+
+  return req;
+}
+
+Here’s a helper function to grab a cookie value:
+
+function getCookie(name) {
+  const match = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+  if (match) return decodeURIComponent(match[2]);
+  return null;
+}
+
+
+⸻
+
+✅ 3. Verify Your Cookies Are Not HttpOnly
+
+If your authentication or anti-forgery cookies are marked HttpOnly, JavaScript (including SwaggerUI) won’t be able to read them. This is by design. To work around this:
+	•	Store a non-HttpOnly copy of the anti-forgery token in a readable cookie or meta tag.
+	•	Authentication (like bearer tokens) can sometimes be passed via Authorization headers instead if cookies are locked down.
+
+⸻
+
+✅ 4. Optional: Inject Auth Headers via SwaggerUI Authorize Button
+
+If your cookies aren’t an option, or you also use Authorization: Bearer xyz headers, you can configure the SwaggerUI securityDefinitions to allow users to enter tokens manually.
+
+⸻
+
+Summary
+
+To fix your issue:
+	•	Set req.credentials = "include" to enable cookies.
+	•	Use requestInterceptor to inject any headers you need (like RequestVerificationToken).
+	•	Ensure the required cookies aren’t HttpOnly if you’re reading them from JavaScript.
+
+Let me know if you want help customizing this based on your exact anti-forgery setup or cookie names!
+
+
+=====
+
+In a .NET 8 application using builder.Services.AddSwaggerGen(), you configure the UI-related settings like adding cookies and headers not in AddSwaggerGen(), but in the Swagger UI middleware, which is typically added via app.UseSwaggerUI() in the Program.cs file.
+
+Here’s how you do it step-by-step:
+
+⸻
+
+✅ 1. Configure AddSwaggerGen (optional, just for metadata)
+
+This is where you configure your Swagger document generation (not UI behavior). For example:
+
+builder.Services.AddSwaggerGen(options =>
 {
-    // This is the common operation for GET or POST, etc.
-    var op = new OpenApiOperation
-    {
-        OperationId = $"{verbGroup.Key}_{TrimSlashes(pageRoute)}",
-        Tags        = new List<OpenApiTag> { new() { Name = Path.GetFileName(pageRoute) } },
-        Parameters  = new List<OpenApiParameter>(),
-        Responses   = BuildSuccessAndErrorResponses(verbGroup)
-    };
+    options.SwaggerDoc("v1", new OpenApiInfo { Title = "My API", Version = "v1" });
 
-    /* --- add the shared "handler" query parameter --- */
-    op.Parameters.Add(new OpenApiParameter
+    // Optional: Add security definition if using bearer tokens
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
-        Name        = "handler",
-        In          = ParameterLocation.Query,
-        Required    = true,
-        Description = "Razor-Page handler to invoke",
-        Schema      = new OpenApiSchema
+        In = ParameterLocation.Header,
+        Description = "JWT Authorization header using the Bearer scheme.",
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer"
+    });
+
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
         {
-            Type = "string",
-            Enum = verbGroup.Select(h => new OpenApiString(h.HandlerName))
-                            .Cast<IOpenApiAny>()
-                            .ToList()
+            new OpenApiSecurityScheme { Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" } },
+            Array.Empty<string>()
+        }
+    });
+});
+
+
+⸻
+
+✅ 2. Configure UseSwaggerUI to Inject JavaScript for Cookies & Headers
+
+You need to inject a custom JavaScript file to handle:
+	•	Sending cookies (credentials: 'include')
+	•	Reading and injecting RequestVerificationToken header from cookies
+
+In Program.cs:
+
+app.UseSwagger();
+app.UseSwaggerUI(options =>
+{
+    options.SwaggerEndpoint("/swagger/v1/swagger.json", "My API V1");
+
+    // Inject your custom JavaScript
+    options.InjectJavascript("/swagger/custom-swagger.js");
+});
+
+
+⸻
+
+✅ 3. Create /wwwroot/swagger/custom-swagger.js
+
+Place this file in your project’s wwwroot/swagger/ folder:
+
+window.onload = function () {
+    const ui = SwaggerUIBundle({
+        url: "/swagger/v1/swagger.json",
+        dom_id: "#swagger-ui",
+        presets: [
+            SwaggerUIBundle.presets.apis,
+            SwaggerUIStandalonePreset
+        ],
+        requestInterceptor: (req) => {
+            req.credentials = "include"; // send cookies
+
+            // Optional: Inject anti-forgery token from cookie
+            const token = getCookie("RequestVerificationToken");
+            if (token) {
+                req.headers["RequestVerificationToken"] = token;
+            }
+
+            return req;
         }
     });
 
-    /* --- add the parameters that belong to each handler --- */
-    foreach (var h in verbGroup)
-    {
-        foreach (var p in h.Parameters)            // your existing reflection code
-        {
-            var apiParam = ToOpenApiParameter(p);  // your existing helper
-            apiParam.Description =
-                $"(handler = {h.HandlerName}) " + apiParam.Description;
-            apiParam.Required = false;            // otherwise they’d all be required
-            op.Parameters.Add(apiParam);
-        }
+    function getCookie(name) {
+        const match = document.cookie.match(new RegExp("(^| )" + name + "=([^;]+)"));
+        return match ? decodeURIComponent(match[2]) : null;
     }
-
-    /* --- attach the operation to the path --- */
-    pathItem.AddOperation(verbGroup.Key.ToOpenApiOperationType(), op);
-}
-
-Why mark handler-specific parameters as optional?
-OpenAPI permits only one operation per path + verb, so every parameter must be satisfiable for every value of handler.
-Swagger-UI will still show them; the text “(handler = Save)” tells users which ones actually apply.
-
-⸻
-
-4 · Remove the old /page/{handler} paths
-
-If you generated them earlier, simply skip them now:
-
-// when you enumerate HandlerMethodDescriptor instances
-// DO NOT call AddPath for the /page/{handlerName} route
-
-
-⸻
-
-5 · Result in Swagger-UI
-	•	/Reports ▶ GET
-	•	handler (enum drop-down: default, Details)
-	•	id (only for handler = Details)
-	•	/Reports ▶ POST
-	•	handler (Save, Delete)
-	•	file (handler = Save)
-	•	reason (handler = Delete)
-
-Users pick a value from the handler drop-down and Swagger-UI sends
-/Reports?handler=Save or /Reports?handler=Delete with the right body or form-data.
-
-⸻
-
-6 · Helper utilities used above
-
-static OperationType ToOpenApiOperationType(this string httpVerb) =>
-    Enum.Parse<OperationType>(httpVerb, ignoreCase: true);
-
-static string TrimSlashes(string s) => s.Trim('/');
-
-static OpenApiResponses BuildSuccessAndErrorResponses(
-    IEnumerable<HandlerMethodDescriptor> handlers)
-{
-    // your own logic – often a plain 200 and 400 is enough
 }
 
 
 ⸻
 
-Caveats & extensions
-	•	If you need completely separate request bodies per handler, you can use the
-OpenAPI 3.0 requestBody.content["application/json"].schema.oneOf trick,
-keyed by handler.
-The simple parameter-union above is usually “good enough” for test tooling.
-	•	Don’t forget to regenerate your SwaggerDoc after these changes so the UI picks them up.
+✅ 4. Ensure Static Files Are Served
 
-That’s all you need—your handlers will now appear as a single page endpoint with a handler query parameter, while every other parameter continues to work exactly as before.
+In Program.cs (should be default):
+
+app.UseStaticFiles();
+
+This allows the Swagger UI to serve your custom-swagger.js.
+
+⸻
+
+🔐 Additional Notes
+	•	If you’re using ASP.NET Core’s Anti-Forgery, and the token is stored in a RequestVerificationToken cookie, make sure it’s:
+	•	Not HttpOnly
+	•	Readable via JavaScript
+	•	If you are using session/cookie-based authentication, also ensure SameSite is Lax or None and you’re serving over HTTPS if required.
+
+⸻
+
+Would you like help generating the anti-forgery cookie/token from your Razor Pages or MVC controller as well?
+
+====
