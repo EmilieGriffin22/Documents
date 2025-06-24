@@ -1,0 +1,70 @@
+Below is a practical “cheat-sheet” you can use when you build an HTTP request for the DevExpress / DevExtreme FileSystemManager endpoint that you call from tools such as Postman, cURL, an automated test, etc.
+
+⸻
+
+1.  The moving parts
+
+Query-string field	What to send	Notes
+command	One of the enum names exactly as DevExpress defines them: GetDirContents, CreateDir, Rename, Move, Copy, Remove, UploadChunk, AbortUpload, Download  ￼	Case-sensitive.
+arguments	A JSON string, URL-encoded	Must match the “options” class that the command expects (for example FileSystemRenameItemOptions).
+
+
+⸻
+
+2.  Anatomy of the JSON you put in arguments
+
+Every “options” class DevExpress ships is just a POD (plain-old data) object.
+The property names you see in the API reference are the JSON property names you must send.
+
+Command	Options class	Required properties (minimal)	Example payload
+GetDirContents	FileSystemLoadItemOptions	directory (a FileSystemItemInfo)	json {"directory":{"path":"Documents","key":"Documents"}}
+CreateDir	FileSystemCreateDirectoryOptions	parentDirectory, directoryName  ￼	json {"parentDirectory":{"path":"Documents","key":"Documents"},"directoryName":"NewFolder"}
+Rename	FileSystemRenameItemOptions	item, itemNewName  ￼	```json {“item”:{“path”:“Documents/old.txt”,“key”:“Documents
+Move	FileSystemMoveItemOptions	item, destinationDirectory (each a FileSystemItemInfo)  ￼	```json {“item”:{“path”:“Docs/a.pdf”,“key”:“Docs
+Copy	FileSystemCopyItemOptions	same as Move	
+Remove	FileSystemDeleteItemOptions	item  ￼	```json {“item”:{“path”:“Docs/temp.tmp”,“key”:“Docs
+Download	FileSystemLoadFileContentOptions or internal	items (array of FileSystemItemInfo), optional zipFileName	```json {“items”:[{“path”:“Docs/report.pdf”,“key”:“Docs
+UploadChunk / AbortUpload	FileSystemUploadFileOptions	destinationDirectory, uploadId, plus chunk-specific fields	DevExpress generates these automatically from the UI; capture a real request first (see §3).
+
+Tip – what is FileSystemItemInfo?
+It’s the little structure the FileManager UI always sends to identify a file or directory.
+At minimum include path (relative to the virtual root) and the opaque key string that the UI uses internally. Everything else is optional.
+
+⸻
+
+3.  How to discover an exact payload fast
+	1.	Open a page that already contains a Dx/FileManager that talks to the same API.
+	2.	Press F12 → Network and perform the action in the UI (rename, move, etc.).
+	3.	Look for the XHR called (for example) …/api/file?command=Rename&arguments=….
+Copy the decoded arguments value – you now have a known-good template.
+	4.	Tweak that JSON for the scenario you want to test (different names, paths, etc.).
+	5.	URL-encode the whole JSON string and drop it into your Postman/cURL request.
+
+Doing one capture per command gives you bullet-proof samples without guessing.
+
+⸻
+
+4.  Example end-to-end request (cURL)
+
+curl -G https://localhost:5001/api/file \
+     --data-urlencode "command=Rename" \
+     --data-urlencode "arguments={\"item\":{\"path\":\"Docs/old.txt\",\"key\":\"Docs|old.txt\"},\"itemNewName\":\"new.txt\"}"
+
+
+⸻
+
+5.  Quick troubleshooting checklist
+
+Symptom	Likely cause
+400 Bad Request / “Cannot deserialize arguments”	Property names don’t match the options class, a required field is missing, or your JSON isn’t URL-encoded.
+404 / 500 from your controller before it reaches DevExpress code	command not one of the 9 enum names or the method signature in your controller doesn’t match Process(FileSystemCommand command, string arguments).
+Operation silently does nothing	The key (or sometimes path) you sent doesn’t exist in the provider you configured. Capture a real request and compare the keys byte-for-byte.
+
+
+⸻
+
+6.  Handy references
+	•	List of commands – FileSystemCommand enum  ￼
+	•	Property names you send are lifted directly from the Options classes, for example ItemNewName, DestinationDirectory  ￼ ￼ ￼.
+
+With the pattern above you can generate any payload you need for unit tests, integration tests, or manual diagnostics without relying on the UI.
